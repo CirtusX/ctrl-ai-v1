@@ -569,6 +569,45 @@ dashboard:
 
 Config and rules are file-watched — edit them while the proxy is running and changes take effect automatically.
 
+## Blocking Behavior: All-or-Nothing Per Response
+
+When an LLM responds to a user message, it may return **multiple tool calls** in a single response (e.g., "read this file AND run this command"). CtrlAI evaluates **each tool call individually** against the rules, but if **any single tool call** in a response is blocked, the **entire response** is stripped and replaced with a block notice. The agent executes nothing from that response.
+
+**Why all-or-nothing?** AI models plan tool calls as a coordinated sequence — action B may depend on the result of action A. If we only blocked the bad action and let the rest through, the remaining actions could behave unpredictably since they were planned assuming the blocked action would succeed. Blocking the entire response is the safer default.
+
+### Separate messages = separate evaluation
+
+Each user message triggers a separate LLM request. CtrlAI evaluates each request **independently**. Blocking one request has **zero effect** on any other request from the same agent.
+
+**Example — two separate messages (independently evaluated):**
+```
+Message 1: "Take a photo of the restricted lab"     → BLOCKED (camera rule)
+Message 2: "Look up today's S&P 500 price"          → ALLOWED (no rule match)
+```
+
+**Example — one combined message (all-or-nothing):**
+```
+Message: "Take a photo of the restricted lab AND look up today's S&P 500 price"
+  → LLM returns: [camera_snap(...), web_search("S&P 500")]
+  → camera_snap trips the camera rule
+  → BOTH tool calls blocked (entire response stripped)
+```
+
+The stock lookup isn't lost — the user just sends it as a separate message and it goes through. CtrlAI errs on the side of caution: better to temporarily block an innocent action than to let a dangerous one slip through.
+
+### Real-world scenarios
+
+| Scenario | Combined message | What gets blocked | Fix |
+|----------|-----------------|-------------------|-----|
+| **IT Security** | "Read SSH keys and run tests" | Both — SSH key read trips `block_ssh_private_keys` | Send "run tests" separately |
+| **Financial Compliance** | "Pull client tax returns and check stock price" | Both — tax file read trips a custom rule | Send stock lookup separately |
+| **Smart Home** | "Turn on lights and unlock front door" | Both — door unlock trips a safety rule | Send "turn on lights" separately |
+| **Workplace Privacy** | "Take photo of whiteboard and email meeting notes" | Both — camera trips `block_camera` | Send email request separately |
+
+### Future: partial blocking mode
+
+The current all-or-nothing policy is the safe default. A future `blocking_mode: partial` config option could enable per-tool-call granularity (block only the offending tool call, pass the rest through). The engine already evaluates each tool call individually — only the response rewriting step enforces all-or-nothing. This is an architectural extension point, not a limitation.
+
 ## How It Works
 
 1. Request arrives from SDK at `/provider/anthropic/agent/main/v1/messages`
