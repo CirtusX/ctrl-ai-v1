@@ -266,8 +266,8 @@ Every rule has this shape:
 | `tool` | Match the tool name | String or list | `exec` or `[read, write, edit]` |
 | `action` | Match the `action` field in tool arguments | String or list | `camera_snap` or `[send, reply, broadcast]` |
 | `agent` | Match the agent ID (from URL path) | String | `work` |
-| `path` | Glob match on `path` argument | Glob pattern | `**/.env`, `~/.ssh/*`, `/etc/**` |
-| `arg_contains` | Substring search in the raw arguments JSON | String | `.ssh/id_`, `password` |
+| `path` | Glob match on `path` argument | String or list | `**/.env` or `["**/.env", "**/.secrets"]` |
+| `arg_contains` | Substring search in the raw arguments JSON | String or list | `password` or `[".ssh/id_", ".aws/credentials"]` |
 | `command_regex` | Regex match on `command` argument (exec tool) | Regex | `rm\s+-rf\s+/`, `sudo\s+` |
 | `url_regex` | Regex match on `url` or `targetUrl` argument | Regex | `evil\.com`, `http://` |
 
@@ -282,10 +282,25 @@ Every rule has this shape:
 - If nothing matches, the tool call is **allowed**
 
 **Single-value vs list fields:**
-- `tool` and `action` accept **lists** — `tool: [exec, bash, read]`
-- `arg_contains`, `path`, `agent`, `command_regex`, `url_regex` are **single values**
+- `tool`, `action`, `path`, and `arg_contains` accept **string or list** — `tool: exec` or `tool: [exec, bash, read]`
+- Lists within a field use **OR logic** — any item matching is sufficient
+- `agent`, `command_regex`, `url_regex` are **single values**
 - For multiple patterns with `command_regex` or `url_regex`, use regex OR: `'(pattern1|pattern2)'`
-- For multiple `arg_contains` or `path` patterns, create separate rules (one per pattern)
+
+Example with list-based `arg_contains` and `path`:
+```yaml
+- name: block-sensitive-configs
+  match:
+    tool: [read, write, edit]
+    arg_contains: [".env", ".aws/credentials", ".ssh/id_"]  # any of these triggers the rule
+  action: block
+
+- name: block-secret-paths
+  match:
+    tool: [read, write]
+    path: ["**/.env", "**/secrets/**", "**/.ssh/*"]  # any glob matching triggers the rule
+  action: block
+```
 
 ### Which Tools Exist
 
@@ -375,6 +390,26 @@ These are the tools an AI agent can call. CtrlAI doesn't define these — the LL
   message: "Cannot read files outside project directory"
 ```
 
+**Block access to multiple sensitive file types (list-based arg_contains):**
+```yaml
+- name: block-all-secrets
+  match:
+    tool: [read, write, edit, exec]
+    arg_contains: [".env", ".aws/credentials", ".ssh/id_", "secret-passwords"]
+  action: block
+  message: "Access to sensitive files blocked"
+```
+
+**Block writes to multiple protected directories (list-based path):**
+```yaml
+- name: protect-directories
+  match:
+    tool: [write, edit]
+    path: ["**/production/**", "**/deploy/**", "**/.github/**"]
+  action: block
+  message: "Writes to protected directories blocked"
+```
+
 **Block multiple exfiltration tools with regex OR:**
 ```yaml
 - name: block-exfil-sensitive
@@ -436,6 +471,8 @@ ctrlai audit export --format csv
 ```
 
 Each entry includes: sequence number, timestamp, agent ID, tool name, arguments, decision (allow/block), matched rule, and a SHA-256 hash linking to the previous entry. Modifying any entry breaks the chain from that point forward.
+
+**Timestamp format:** All timestamps are stored in UTC using ISO 8601 / RFC 3339 with nanosecond precision (e.g., `2026-02-14T21:36:05.2918658Z`). The dashboard automatically converts these to your local timezone for display. When querying the audit API directly (`/api/audit`), timestamps are returned in UTC.
 
 Log files:
 ```

@@ -16,7 +16,7 @@ import (
 type compiledMatcher struct {
 	commandRegex *regexp.Regexp
 	urlRegex     *regexp.Regexp
-	pathGlob     glob.Glob
+	pathGlobs    []glob.Glob
 }
 
 // compileMatcher pre-compiles all pattern matchers for a rule.
@@ -40,12 +40,12 @@ func compileMatcher(r *Rule) error {
 		r.compiled.urlRegex = re
 	}
 
-	if r.Match.Path != "" {
-		g, err := glob.Compile(r.Match.Path)
+	for _, p := range r.Match.Path {
+		g, err := glob.Compile(p)
 		if err != nil {
-			return fmt.Errorf("rule %q: invalid path glob: %w", r.Name, err)
+			return fmt.Errorf("rule %q: invalid path glob %q: %w", r.Name, p, err)
 		}
-		r.compiled.pathGlob = g
+		r.compiled.pathGlobs = append(r.compiled.pathGlobs, g)
 	}
 
 	return nil
@@ -59,8 +59,8 @@ func compileMatcher(r *Rule) error {
 //   - tool:          case-insensitive match (handles OAuth PascalCase)
 //   - action:        case-insensitive match on "action" argument field
 //   - agent:         exact match on agent ID from URL path
-//   - path:          glob match on "path" argument
-//   - arg_contains:  case-insensitive substring in raw arguments JSON
+//   - path:          glob match on "path" argument (OR across list)
+//   - arg_contains:  case-insensitive substring in raw arguments JSON (OR across list)
 //   - command_regex: regex match on "command" argument field
 //   - url_regex:     regex match on "url" or "targetUrl" argument field
 func matchesRule(r *Rule, agentID string, tc extractor.ToolCall) bool {
@@ -104,18 +104,28 @@ func matchesRule(r *Rule, agentID string, tc extractor.ToolCall) bool {
 		}
 	}
 
-	// Path glob match.
+	// Path glob match (OR across list).
 	// Checks the "path" field in arguments (for read/write/edit tools).
-	if m.Path != "" && r.compiled != nil && r.compiled.pathGlob != nil {
+	if len(m.Path) > 0 && r.compiled != nil && len(r.compiled.pathGlobs) > 0 {
 		pathVal := getStringArg(tc.Arguments, "path")
-		if pathVal == "" || !r.compiled.pathGlob.Match(pathVal) {
+		if pathVal == "" {
+			return false
+		}
+		matched := false
+		for _, g := range r.compiled.pathGlobs {
+			if g.Match(pathVal) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
 			return false
 		}
 	}
 
-	// Argument substring match (case-insensitive).
+	// Argument substring match (case-insensitive, OR across list).
 	// Searches the raw JSON representation of arguments.
-	if m.ArgContains != "" {
+	if len(m.ArgContains) > 0 {
 		rawStr := string(tc.RawJSON)
 		if rawStr == "" {
 			// Fallback: marshal Arguments to JSON for searching.
@@ -123,7 +133,15 @@ func matchesRule(r *Rule, agentID string, tc extractor.ToolCall) bool {
 				rawStr = string(data)
 			}
 		}
-		if !strings.Contains(strings.ToLower(rawStr), strings.ToLower(m.ArgContains)) {
+		rawLower := strings.ToLower(rawStr)
+		matched := false
+		for _, s := range m.ArgContains {
+			if strings.Contains(rawLower, strings.ToLower(s)) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
 			return false
 		}
 	}

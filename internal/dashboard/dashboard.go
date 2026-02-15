@@ -391,6 +391,10 @@ function esc(s) {
   if (s == null) return '';
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
+function localTime(ts) {
+  if (!ts) return '';
+  try { return new Date(ts).toLocaleString(); } catch(e) { return esc(ts); }
+}
 async function refresh() {
   try {
     const [agentsRes, rulesRes, auditRes] = await Promise.all([
@@ -433,7 +437,7 @@ function renderAudit(entries) {
   if (!entries || entries.length === 0) { feed.innerHTML = '<div class="feed-entry">No entries yet</div>'; return; }
   feed.innerHTML = entries.map(e => {
     const cls = e.decision === 'block' ? 'decision-block' : e.decision === 'allow' ? 'decision-allow' : 'decision-info';
-    return '<div class="feed-entry">[' + esc(e.ts) + '] agent=' + esc(e.agent||'-') +
+    return '<div class="feed-entry">[' + localTime(e.ts) + '] agent=' + esc(e.agent||'-') +
       ' tool=' + esc(e.tool||e.type||'-') + ' <span class="' + cls + '">' + esc(e.decision) + '</span>' +
       (e.rule ? ' rule=' + esc(e.rule) : '') + '</div>';
   }).join('');
@@ -462,7 +466,7 @@ function connectWS() {
       const cls = entry.decision === 'block' ? 'decision-block' : entry.decision === 'allow' ? 'decision-allow' : 'decision-info';
       const div = document.createElement('div');
       div.className = 'feed-entry';
-      div.innerHTML = '[' + esc(entry.ts) + '] agent=' + esc(entry.agent||'-') +
+      div.innerHTML = '[' + localTime(entry.ts) + '] agent=' + esc(entry.agent||'-') +
         ' tool=' + esc(entry.tool||entry.type||'-') + ' <span class="' + cls + '">' + esc(entry.decision) + '</span>' +
         (entry.rule ? ' rule=' + esc(entry.rule) : '');
       feed.insertBefore(div, feed.firstChild);

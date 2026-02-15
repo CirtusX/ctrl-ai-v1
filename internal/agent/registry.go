@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sort"
 	"sync"
 	"time"
 
@@ -97,7 +98,7 @@ func NewRegistry(path string) (*Registry, error) {
 	return r, nil
 }
 
-// List returns all registered agents.
+// List returns all registered agents, sorted alphabetically by ID.
 func (r *Registry) List() []Agent {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -106,6 +107,9 @@ func (r *Registry) List() []Agent {
 	for _, a := range r.agents {
 		agents = append(agents, *a)
 	}
+	sort.Slice(agents, func(i, j int) bool {
+		return agents[i].ID < agents[j].ID
+	})
 	return agents
 }
 

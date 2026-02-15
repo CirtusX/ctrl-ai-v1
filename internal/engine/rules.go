@@ -8,8 +8,8 @@
 //   - Tool name (case-insensitive, design doc Section 6.3)
 //   - Action field (case-insensitive, for tools like "nodes", "browser")
 //   - Agent ID (exact match)
-//   - File path glob (for read/write/edit tools)
-//   - Argument substring (case-insensitive, matches anywhere in raw JSON)
+//   - File path glob patterns (string or list, OR logic)
+//   - Argument substrings (string or list, case-insensitive, OR logic)
 //   - Command regex (for exec tool's "command" field)
 //   - URL regex (for web_fetch/browser "url"/"targetUrl" fields)
 //
@@ -56,8 +56,8 @@ type Rule struct {
 //	    Tool         []string // tool names (OR) — CASE-INSENSITIVE
 //	    Action       []string // action values (OR) — CASE-INSENSITIVE
 //	    Agent        string   // agent ID (exact)
-//	    Path         string   // glob for `path` arg
-//	    ArgContains  string   // substring in raw JSON (case-insensitive)
+//	    Path         []string // glob patterns for `path` arg (OR)
+//	    ArgContains  []string // substrings in raw JSON (OR, case-insensitive)
 //	    CommandRegex string   // regex for `command` field
 //	    URLRegex     string   // regex for `url`/`targetUrl` field
 //	}
@@ -65,8 +65,8 @@ type RuleMatch struct {
 	Tool         stringOrList `yaml:"tool"`
 	Action       stringOrList `yaml:"action"`
 	Agent        string       `yaml:"agent"`
-	Path         string       `yaml:"path"`
-	ArgContains  string       `yaml:"arg_contains"`
+	Path         stringOrList `yaml:"path"`
+	ArgContains  stringOrList `yaml:"arg_contains"`
 	CommandRegex string       `yaml:"command_regex"`
 	URLRegex     string       `yaml:"url_regex"`
 }
