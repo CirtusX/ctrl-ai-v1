@@ -56,7 +56,8 @@ func Extract(body []byte, apiType APIType) []ToolCall {
 	case APITypeOpenAI:
 		return extractOpenAI(body)
 	default:
-		return nil
+		// TODO Revert if doesn't work
+		return extractOpenAI(body)
 	}
 }
 
