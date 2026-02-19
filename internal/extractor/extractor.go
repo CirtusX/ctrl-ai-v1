@@ -1,8 +1,9 @@
 // Package extractor parses LLM response bodies and extracts tool calls.
 //
-// Supports two API formats:
+// Supports three API formats:
 //   - Anthropic Messages API: tool calls are in content[].type="tool_use" blocks
 //   - OpenAI Chat Completions API: tool calls are in choices[0].message.tool_calls[]
+//   - OpenAI Responses API: tool calls are in output[].type="function_call"
 //
 // Tool names are stored as-is (preserving original case). Case-insensitive
 // matching happens in the engine package during rule evaluation.
@@ -21,6 +22,10 @@ const (
 	APITypeAnthropic APIType = iota
 	// APITypeOpenAI handles /v1/chat/completions responses.
 	APITypeOpenAI
+	// APITypeOpenAIResponses handles /v1/responses responses.
+	// This is a distinct format from Chat Completions — tool calls are in
+	// output[].type="function_call" instead of choices[].message.tool_calls[].
+	APITypeOpenAIResponses
 	// APITypeUnknown is for unrecognized API paths — passed through
 	// without tool inspection.
 	APITypeUnknown
@@ -55,6 +60,8 @@ func Extract(body []byte, apiType APIType) []ToolCall {
 		return extractAnthropic(body)
 	case APITypeOpenAI:
 		return extractOpenAI(body)
+	case APITypeOpenAIResponses:
+		return extractOpenAIResponses(body)
 	default:
 		return nil
 	}

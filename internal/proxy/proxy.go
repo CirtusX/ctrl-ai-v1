@@ -96,17 +96,10 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"method", r.Method,
 	)
 
-	// --- Step 2: Check kill switch ---
-	// Design doc Section 4.3: If agent is killed, return fake response immediately.
-	if p.killSwitch.IsKilled(route.AgentID) {
-		slog.Warn("request from killed agent", "agent", route.AgentID)
-		p.respondKilled(w, route)
-		p.auditLog.LogKill(route.AgentID, "request from killed agent")
-		return
-	}
-
-	// --- Step 3: Read request body ---
-	// We read the body to extract metadata (model, tools, stream flag).
+	// --- Step 2: Read request body ---
+	// We read the body first to extract metadata (model, tools, stream flag).
+	// This is needed before the kill switch check so we can return the correct
+	// response format (SSE vs JSON) for killed agents.
 	// The body is forwarded to upstream unchanged.
 	body, err := io.ReadAll(io.LimitReader(r.Body, 10*1024*1024))
 	if err != nil {
@@ -117,6 +110,16 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 
 	reqMeta := extractor.ExtractRequestMeta(body, route.APIType)
+
+	// --- Step 3: Check kill switch ---
+	// Design doc Section 4.3: If agent is killed, return fake response immediately.
+	// Must happen after body read so we know whether to return SSE or JSON.
+	if p.killSwitch.IsKilled(route.AgentID) {
+		slog.Warn("request from killed agent", "agent", route.AgentID)
+		p.respondKilled(w, route, reqMeta.Stream)
+		p.auditLog.LogKill(route.AgentID, "request from killed agent")
+		return
+	}
 
 	// --- Step 4: Update agent registry ---
 	// Auto-register on first request, update last_seen and stats.
@@ -335,9 +338,46 @@ func (p *Proxy) handleStreaming(w http.ResponseWriter, resp *http.Response, rout
 
 // respondKilled sends a fake LLM response for a killed agent.
 // The response looks like a normal "end_turn" so the SDK stops gracefully.
+// If the request asked for streaming (stream: true), we return a proper SSE
+// stream instead of JSON — otherwise the SDK may fail to parse the response.
 // Design doc Section 9.1.
-func (p *Proxy) respondKilled(w http.ResponseWriter, route RouteInfo) {
+func (p *Proxy) respondKilled(w http.ResponseWriter, route RouteInfo, isStreaming bool) {
 	body := buildKilledResponse(route.APIType)
+
+	if isStreaming {
+		// Return as SSE stream so streaming SDKs can parse it correctly.
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			// Fallback to JSON if flushing isn't supported.
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+			w.WriteHeader(http.StatusOK)
+			w.Write(body)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.WriteHeader(http.StatusOK)
+
+		// Write the killed response as SSE events appropriate for each API type.
+		switch route.APIType {
+		case extractor.APITypeAnthropic:
+			// Anthropic SSE: event type + data lines.
+			fmt.Fprintf(w, "event: message_start\ndata: %s\n\n", string(body))
+			fmt.Fprintf(w, "event: message_stop\ndata: {}\n\n")
+		case extractor.APITypeOpenAIResponses:
+			// Responses API SSE: typed events.
+			fmt.Fprintf(w, "event: response.completed\ndata: %s\n\n", string(body))
+		default:
+			// OpenAI Chat Completions SSE: data-only lines.
+			fmt.Fprintf(w, "data: %s\n\n", string(body))
+			fmt.Fprint(w, "data: [DONE]\n\n")
+		}
+		flusher.Flush()
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Content-Length", strconv.Itoa(len(body)))

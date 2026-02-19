@@ -313,13 +313,13 @@ func TestBuiltinRules(t *testing.T) {
 		{
 			name:     "shell config .zshrc",
 			toolCall: tc("edit", map[string]any{"path": "/home/user/.zshrc"}),
-			wantRule: "block_shell_config_write_zsh",
+			wantRule: "block_shell_config_write",
 			wantBlk:  true,
 		},
 		{
 			name:     "shell config .profile",
 			toolCall: tc("write", map[string]any{"path": "/home/user/.profile"}),
-			wantRule: "block_shell_config_write_profile",
+			wantRule: "block_shell_config_write",
 			wantBlk:  true,
 		},
 		{
@@ -392,8 +392,6 @@ builtin:
   block_env_files: true
   block_credential_files: true
   block_shell_config_write: true
-  block_shell_config_write_zsh: true
-  block_shell_config_write_profile: true
   block_browser_passwords: true
   block_private_key_content: true
   block_system_files: true
@@ -695,5 +693,227 @@ action: block
 	d := e.Evaluate("a", tc("exec", nil))
 	if d.Rule != "single_tool_test" {
 		t.Errorf("single string tool should match: got %+v", d)
+	}
+}
+
+// ==========================================================================
+// Consolidated shell config rule tests
+// ==========================================================================
+
+func TestBuiltinRules_ShellConfigConsolidated(t *testing.T) {
+	e := newDefaultEngine(t)
+
+	// All shell config variants should be blocked by the SAME rule.
+	shellConfigs := []struct {
+		name string
+		path string
+	}{
+		{".bashrc", "/home/user/.bashrc"},
+		{".bash_profile", "/home/user/.bash_profile"},
+		{".bash_login", "/home/user/.bash_login"},
+		{".zshrc", "/home/user/.zshrc"},
+		{".zprofile", "/home/user/.zprofile"},
+		{".profile", "/home/user/.profile"},
+	}
+
+	for _, sc := range shellConfigs {
+		t.Run(sc.name, func(t *testing.T) {
+			d := e.Evaluate("a", tc("write", map[string]any{"path": sc.path, "content": "malicious"}))
+			if d.Action != "block" {
+				t.Errorf("%s: expected block, got %q", sc.name, d.Action)
+			}
+			if d.Rule != "block_shell_config_write" {
+				t.Errorf("%s: expected rule block_shell_config_write, got %q", sc.name, d.Rule)
+			}
+		})
+	}
+
+	// "edit" tool should also match.
+	d := e.Evaluate("a", tc("edit", map[string]any{"path": "/root/.zshrc"}))
+	if d.Action != "block" || d.Rule != "block_shell_config_write" {
+		t.Errorf("edit .zshrc: expected block_shell_config_write, got %+v", d)
+	}
+
+	// "read" tool should NOT match (only write/edit are blocked).
+	d = e.Evaluate("a", tc("read", map[string]any{"path": "/home/user/.bashrc"}))
+	if d.Rule == "block_shell_config_write" {
+		t.Error("read should not match block_shell_config_write")
+	}
+}
+
+// ==========================================================================
+// Expanded credential file tests
+// ==========================================================================
+
+func TestBuiltinRules_ExpandedCredentialFiles(t *testing.T) {
+	e := newDefaultEngine(t)
+
+	credentialPaths := []struct {
+		name string
+		path string
+	}{
+		{"aws credentials", "/home/user/.aws/credentials"},
+		{"gcloud dir", "/home/user/.gcloud/application_default_credentials.json"},
+		{"docker config", "/home/user/.docker/config.json"},
+		{"kube config", "/home/user/.kube/config"},
+		{"npmrc", "/home/user/.npmrc"},
+		{"pypirc", "/home/user/.pypirc"},
+	}
+
+	for _, cp := range credentialPaths {
+		t.Run(cp.name, func(t *testing.T) {
+			d := e.Evaluate("a", tc("read", map[string]any{"path": cp.path}))
+			if d.Action != "block" || d.Rule != "block_credential_files" {
+				t.Errorf("%s: expected block by block_credential_files, got %+v", cp.name, d)
+			}
+		})
+	}
+}
+
+// ==========================================================================
+// Browser password database tests
+// ==========================================================================
+
+func TestBuiltinRules_BrowserPasswords(t *testing.T) {
+	e := newDefaultEngine(t)
+
+	browserDBs := []struct {
+		name string
+		path string
+	}{
+		{"Chrome Login Data", "/home/user/.config/google-chrome/Default/Login Data"},
+		{"Chrome Cookies", "/home/user/.config/google-chrome/Default/Cookies"},
+		{"Firefox key4.db", "/home/user/.mozilla/firefox/profile/key4.db"},
+		{"Firefox logins.json", "/home/user/.mozilla/firefox/profile/logins.json"},
+	}
+
+	for _, db := range browserDBs {
+		t.Run(db.name, func(t *testing.T) {
+			d := e.Evaluate("a", tc("read", map[string]any{"path": db.path}))
+			if d.Action != "block" || d.Rule != "block_browser_passwords" {
+				t.Errorf("%s: expected block by block_browser_passwords, got %+v", db.name, d)
+			}
+		})
+	}
+}
+
+// ==========================================================================
+// .env file glob tests (including .env.*)
+// ==========================================================================
+
+func TestBuiltinRules_EnvFiles(t *testing.T) {
+	e := newDefaultEngine(t)
+
+	envPaths := []struct {
+		name    string
+		path    string
+		blocked bool
+	}{
+		{".env", "/app/.env", true},
+		{".env.local", "/app/.env.local", true},
+		{".env.production", "/app/.env.production", true},
+		{".env.development", "/app/.env.development", true},
+		{"nested .env", "/app/project/.env", true},
+		{"not env", "/app/env.go", false},
+		{"not env file", "/app/config.env.bak", false},
+	}
+
+	for _, ep := range envPaths {
+		t.Run(ep.name, func(t *testing.T) {
+			d := e.Evaluate("a", tc("read", map[string]any{"path": ep.path}))
+			if ep.blocked {
+				if d.Action != "block" || d.Rule != "block_env_files" {
+					t.Errorf("%s: expected block by block_env_files, got %+v", ep.name, d)
+				}
+			} else {
+				if d.Rule == "block_env_files" {
+					t.Errorf("%s: should not match block_env_files", ep.name)
+				}
+			}
+		})
+	}
+}
+
+// ==========================================================================
+// System files tests (includes /etc/passwd)
+// ==========================================================================
+
+func TestBuiltinRules_SystemFiles(t *testing.T) {
+	e := newDefaultEngine(t)
+
+	tests := []struct {
+		name string
+		path string
+	}{
+		{"shadow", "/etc/shadow"},
+		{"passwd", "/etc/passwd"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := e.Evaluate("a", tc("read", map[string]any{"path": tt.path}))
+			if d.Action != "block" || d.Rule != "block_system_files" {
+				t.Errorf("%s: expected block by block_system_files, got %+v", tt.name, d)
+			}
+		})
+	}
+}
+
+// ==========================================================================
+// Message rule ordering tests (specific before catch-all)
+// ==========================================================================
+
+func TestBuiltinRules_MessageRuleOrdering(t *testing.T) {
+	// With default toggles, block_message_admin is on but block_message_send
+	// and block_unsolicited_messages are off.
+	e := newDefaultEngine(t)
+
+	// Admin action should be caught by the specific rule.
+	d := e.Evaluate("a", tc("message", map[string]any{"action": "kick"}))
+	if d.Action != "block" || d.Rule != "block_message_admin" {
+		t.Errorf("kick: expected block_message_admin, got %+v", d)
+	}
+
+	// Send should be allowed (block_message_send is off by default).
+	d = e.Evaluate("a", tc("message", map[string]any{"action": "send"}))
+	if d.Action == "block" {
+		t.Errorf("send: expected allow (toggle off), got %+v", d)
+	}
+}
+
+func TestBuiltinRules_MessageRuleOrdering_AllEnabled(t *testing.T) {
+	dir := t.TempDir()
+	rulesPath := filepath.Join(dir, "rules.yaml")
+	err := os.WriteFile(rulesPath, []byte(`rules: []
+builtin:
+  block_message_send: true
+  block_message_admin: true
+  block_unsolicited_messages: true
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	e, err := New(rulesPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Admin action should be caught by block_message_admin (specific first).
+	d := e.Evaluate("a", tc("message", map[string]any{"action": "kick"}))
+	if d.Action != "block" || d.Rule != "block_message_admin" {
+		t.Errorf("kick with all enabled: expected block_message_admin, got %+v", d)
+	}
+
+	// Send should be caught by block_message_send (specific).
+	d = e.Evaluate("a", tc("message", map[string]any{"action": "send"}))
+	if d.Action != "block" || d.Rule != "block_message_send" {
+		t.Errorf("send with all enabled: expected block_message_send, got %+v", d)
+	}
+
+	// Unknown action should be caught by block_unsolicited_messages (catch-all).
+	d = e.Evaluate("a", tc("message", map[string]any{"action": "unknown_action"}))
+	if d.Action != "block" || d.Rule != "block_unsolicited_messages" {
+		t.Errorf("unknown action with all enabled: expected block_unsolicited_messages, got %+v", d)
 	}
 }

@@ -55,10 +55,11 @@ type RouteInfo struct {
 //
 // API type detection from design doc Section 2:
 //
-//	/v1/messages           → Anthropic
-//	/v1/chat/completions   → OpenAI
-//	/v1/responses          → OpenAI
-//	anything else          → Unknown (passed through without inspection)
+//	/v1/messages              → Anthropic
+//	/v1/chat/completions      → OpenAI (also Moonshot, Qwen, MiniMax)
+//	/v1/responses             → OpenAI
+//	/paas/v4/chat/completions → OpenAI-compatible (Zhipu/GLM)
+//	anything else             → Unknown (passed through without inspection)
 func ParseRoute(path string) (RouteInfo, error) {
 	// Strip leading slash and split into segments.
 	path = strings.TrimPrefix(path, "/")
@@ -104,10 +105,11 @@ func ParseRoute(path string) (RouteInfo, error) {
 //
 // Design doc Section 2:
 //
-//	/v1/messages           → Anthropic
-//	/v1/chat/completions   → OpenAI (completions)
-//	/v1/responses          → OpenAI (responses)
-//	anything else          → Unknown (pass through without inspection)
+//	/v1/messages              → Anthropic
+//	/v1/chat/completions      → OpenAI (completions) — also Moonshot, Qwen, MiniMax
+//	/v1/responses             → OpenAI (responses)
+//	/paas/v4/chat/completions → OpenAI-compatible (Zhipu/GLM)
+//	anything else             → Unknown (pass through without inspection)
 func detectAPIType(apiPath string) extractor.APIType {
 	switch {
 	case strings.HasPrefix(apiPath, "/v1/messages"):
@@ -115,6 +117,10 @@ func detectAPIType(apiPath string) extractor.APIType {
 	case strings.HasPrefix(apiPath, "/v1/chat/completions"):
 		return extractor.APITypeOpenAI
 	case strings.HasPrefix(apiPath, "/v1/responses"):
+		return extractor.APITypeOpenAIResponses
+	case strings.HasPrefix(apiPath, "/paas/v4/chat/completions"):
+		// Zhipu/GLM uses a non-standard path but the response format
+		// is OpenAI-compatible (same tool_calls structure, same SSE format).
 		return extractor.APITypeOpenAI
 	default:
 		return extractor.APITypeUnknown

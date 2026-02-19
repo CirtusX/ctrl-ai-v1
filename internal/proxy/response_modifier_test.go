@@ -264,6 +264,144 @@ func TestBuildKilledResponse_Unknown(t *testing.T) {
 	}
 }
 
+// --- OpenAI Responses API response modification ---
+
+func TestModifyOpenAIResponsesResponse_SingleBlock(t *testing.T) {
+	body := []byte(`{
+		"id":"resp_abc",
+		"output":[
+			{"type":"message","content":[{"type":"output_text","text":"Checking..."}]},
+			{"type":"function_call","id":"fc_001","call_id":"call_abc","name":"exec","arguments":"{\"command\":\"cat /etc/shadow\"}"}
+		],
+		"status":"completed"
+	}`)
+
+	blocked := []extractor.ToolCall{{ID: "call_abc", Name: "exec", Index: 1}}
+	decisions := []engine.Decision{{Action: "block", Rule: "block_system_files", Message: "Cannot access system files"}}
+
+	modified := modifyNonStreamingResponse(body, extractor.APITypeOpenAIResponses, blocked, decisions)
+
+	var resp map[string]json.RawMessage
+	if err := json.Unmarshal(modified, &resp); err != nil {
+		t.Fatalf("failed to parse modified response: %v", err)
+	}
+
+	// status should remain completed.
+	var status string
+	json.Unmarshal(resp["status"], &status)
+	if status != "completed" {
+		t.Errorf("status: expected completed, got %q", status)
+	}
+
+	// output should not contain function_call items.
+	var output []map[string]json.RawMessage
+	json.Unmarshal(resp["output"], &output)
+
+	for _, item := range output {
+		itemType := unquoteRaw(item["type"])
+		if itemType == "function_call" {
+			t.Error("function_call should have been stripped from output")
+		}
+	}
+
+	// Should have a message with block notice.
+	hasNotice := false
+	for _, item := range output {
+		itemType := unquoteRaw(item["type"])
+		if itemType == "message" {
+			var content string
+			raw, _ := json.Marshal(item["content"])
+			if json.Valid(raw) && len(raw) > 2 {
+				hasNotice = true
+			}
+			_ = content
+		}
+	}
+	if !hasNotice {
+		t.Error("expected block notice message in output")
+	}
+}
+
+func TestModifyOpenAIResponsesResponse_PartialBlock(t *testing.T) {
+	body := []byte(`{
+		"id":"resp_partial",
+		"output":[
+			{"type":"function_call","call_id":"call_a","name":"exec","arguments":"{\"command\":\"ls\"}"},
+			{"type":"function_call","call_id":"call_b","name":"exec","arguments":"{\"command\":\"rm -rf /\"}"}
+		],
+		"status":"completed"
+	}`)
+
+	// Only block the second one.
+	blocked := []extractor.ToolCall{{ID: "call_b", Name: "exec", Index: 1}}
+	decisions := []engine.Decision{{Action: "block", Rule: "block_destructive", Message: "Destructive"}}
+
+	modified := modifyNonStreamingResponse(body, extractor.APITypeOpenAIResponses, blocked, decisions)
+
+	var resp map[string]json.RawMessage
+	json.Unmarshal(modified, &resp)
+
+	var output []map[string]json.RawMessage
+	json.Unmarshal(resp["output"], &output)
+
+	// Should still have the allowed function_call (call_a).
+	fcCount := 0
+	for _, item := range output {
+		if unquoteRaw(item["type"]) == "function_call" {
+			fcCount++
+			callID := unquoteRaw(item["call_id"])
+			if callID != "call_a" {
+				t.Errorf("wrong function_call kept: %q", callID)
+			}
+		}
+	}
+	if fcCount != 1 {
+		t.Errorf("expected 1 remaining function_call, got %d", fcCount)
+	}
+}
+
+// --- buildKilledResponse for OpenAI Responses API ---
+
+func TestBuildKilledResponse_OpenAIResponses(t *testing.T) {
+	body := buildKilledResponse(extractor.APITypeOpenAIResponses)
+	var resp map[string]json.RawMessage
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+
+	var status string
+	json.Unmarshal(resp["status"], &status)
+	if status != "completed" {
+		t.Errorf("status: expected completed, got %q", status)
+	}
+
+	// Should have an output with a message.
+	var output []map[string]json.RawMessage
+	json.Unmarshal(resp["output"], &output)
+	if len(output) == 0 {
+		t.Fatal("expected at least one output item")
+	}
+	if unquoteRaw(output[0]["type"]) != "message" {
+		t.Errorf("expected message type, got %q", unquoteRaw(output[0]["type"]))
+	}
+}
+
+// --- safeMarshalRaw ---
+
+func TestSafeMarshalRaw_ValidInput(t *testing.T) {
+	result := safeMarshalRaw(map[string]string{"key": "value"})
+	if string(result) != `{"key":"value"}` {
+		t.Errorf("expected valid JSON, got %q", string(result))
+	}
+}
+
+func TestSafeMarshalRaw_NilInput(t *testing.T) {
+	result := safeMarshalRaw(nil)
+	if string(result) != "null" {
+		t.Errorf("expected null, got %q", string(result))
+	}
+}
+
 // --- formatBlockNotice ---
 
 func TestFormatBlockNotice(t *testing.T) {

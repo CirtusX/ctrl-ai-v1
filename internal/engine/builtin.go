@@ -23,44 +23,53 @@ func builtinRules() []Rule {
 		},
 		{
 			Name:    "block_env_files",
-			Match:   RuleMatch{Tool: stringOrList{"read", "write", "edit"}, Path: stringOrList{"**/.env"}},
+			Match:   RuleMatch{Tool: stringOrList{"read", "write", "edit"}, Path: stringOrList{"**/.env", "**/.env.*"}},
 			Action:  "block",
 			Message: "Cannot access .env files",
 			Builtin: true,
 		},
 		{
-			Name:    "block_credential_files",
-			Match:   RuleMatch{Tool: stringOrList{"read", "write", "edit"}, ArgContains: stringOrList{".aws/credentials"}},
+			// Covers: .aws/credentials, .gcloud/*.json, .docker/config.json,
+			// .kube/config — all common credential file paths.
+			Name:  "block_credential_files",
+			Match: RuleMatch{Tool: stringOrList{"read", "write", "edit"}, ArgContains: stringOrList{
+				".aws/credentials",
+				".gcloud/",
+				".docker/config.json",
+				".kube/config",
+				".npmrc",
+				".pypirc",
+			}},
 			Action:  "block",
 			Message: "Cannot access credential files",
 			Builtin: true,
 		},
-		// Shell config blocking uses ArgContains to match common shell config
-		// filenames in the path argument. Design doc: .bashrc, .zshrc, .profile.
+		// Shell config blocking — single rule with all shell config filenames.
+		// Design doc: .bashrc, .zshrc, .profile, plus commonly abused variants.
 		{
-			Name:    "block_shell_config_write",
-			Match:   RuleMatch{Tool: stringOrList{"write", "edit"}, ArgContains: stringOrList{".bashrc"}},
+			Name: "block_shell_config_write",
+			Match: RuleMatch{Tool: stringOrList{"write", "edit"}, ArgContains: stringOrList{
+				".bashrc",
+				".bash_profile",
+				".bash_login",
+				".zshrc",
+				".zprofile",
+				".profile",
+			}},
 			Action:  "block",
 			Message: "Cannot modify shell configuration files",
 			Builtin: true,
 		},
 		{
-			Name:    "block_shell_config_write_zsh",
-			Match:   RuleMatch{Tool: stringOrList{"write", "edit"}, ArgContains: stringOrList{".zshrc"}},
-			Action:  "block",
-			Message: "Cannot modify shell configuration files",
-			Builtin: true,
-		},
-		{
-			Name:    "block_shell_config_write_profile",
-			Match:   RuleMatch{Tool: stringOrList{"write", "edit"}, ArgContains: stringOrList{".profile"}},
-			Action:  "block",
-			Message: "Cannot modify shell configuration files",
-			Builtin: true,
-		},
-		{
-			Name:    "block_browser_passwords",
-			Match:   RuleMatch{Tool: stringOrList{"read", "exec"}, ArgContains: stringOrList{"Login Data"}},
+			// Browser credential databases: Chrome/Chromium Login Data, Cookies,
+			// Firefox key4.db/logins.json.
+			Name:  "block_browser_passwords",
+			Match: RuleMatch{Tool: stringOrList{"read", "exec"}, ArgContains: stringOrList{
+				"Login Data",
+				"Cookies",
+				"key4.db",
+				"logins.json",
+			}},
 			Action:  "block",
 			Message: "Cannot access browser password databases",
 			Builtin: true,
@@ -74,7 +83,7 @@ func builtinRules() []Rule {
 		},
 		{
 			Name:    "block_system_files",
-			Match:   RuleMatch{Tool: stringOrList{"read", "write", "edit"}, ArgContains: stringOrList{"/etc/shadow"}},
+			Match:   RuleMatch{Tool: stringOrList{"read", "write", "edit"}, ArgContains: stringOrList{"/etc/shadow", "/etc/passwd"}},
 			Action:  "block",
 			Message: "Cannot access system credential files",
 			Builtin: true,
@@ -139,13 +148,12 @@ func builtinRules() []Rule {
 		},
 
 		// --- Messaging rules ---
-		{
-			Name:    "block_unsolicited_messages",
-			Match:   RuleMatch{Tool: stringOrList{"message"}},
-			Action:  "block",
-			Message: "Message tool usage blocked",
-			Builtin: true,
-		},
+		// Note: block_message_send and block_message_admin use action filters
+		// to target specific message operations. block_unsolicited_messages is
+		// a catch-all that blocks ALL message tool usage (no action filter).
+		// They are ordered so that the more specific rules come first,
+		// allowing users to enable send/admin blocking independently.
+		// When block_unsolicited_messages is enabled, it supersedes both.
 		{
 			Name:    "block_message_send",
 			Match:   RuleMatch{Tool: stringOrList{"message"}, Action: stringOrList{"send", "sendWithEffect", "sendAttachment", "reply", "thread-reply", "broadcast"}},
@@ -158,6 +166,17 @@ func builtinRules() []Rule {
 			Match:   RuleMatch{Tool: stringOrList{"message"}, Action: stringOrList{"kick", "ban", "timeout", "role-add", "role-remove"}},
 			Action:  "block",
 			Message: "Messaging admin action blocked",
+			Builtin: true,
+		},
+		{
+			// Catch-all for message tool. Placed AFTER specific rules so that
+			// when all three are enabled, the specific rules match first (for
+			// better audit log messages). When only this rule is enabled, it
+			// blocks everything.
+			Name:    "block_unsolicited_messages",
+			Match:   RuleMatch{Tool: stringOrList{"message"}},
+			Action:  "block",
+			Message: "Message tool usage blocked",
 			Builtin: true,
 		},
 
@@ -225,31 +244,29 @@ func builtinRules() []Rule {
 func defaultBuiltinToggles() map[string]bool {
 	return map[string]bool{
 		// File system — all on by default.
-		"block_ssh_private_keys":    true,
-		"block_env_files":           true,
-		"block_credential_files":    true,
-		"block_shell_config_write":         true,
-		"block_shell_config_write_zsh":     true,
-		"block_shell_config_write_profile": true,
-		"block_browser_passwords":   true,
+		"block_ssh_private_keys":  true,
+		"block_env_files":         true,
+		"block_credential_files":  true,
+		"block_shell_config_write": true,
+		"block_browser_passwords": true,
 		"block_private_key_content": true,
-		"block_system_files":        true,
-		"block_self_modification":   true,
+		"block_system_files":      true,
+		"block_self_modification": true,
 
 		// Destructive commands — on by default.
 		"block_destructive_commands": true,
 		"block_exfiltration":         true,
 
 		// Privacy/surveillance — on by default.
-		"block_camera":       true,
+		"block_camera":        true,
 		"block_screen_record": true,
 		"block_location":      true,
 		"block_node_rce":      true,
 
-		// Messaging — admin on, send off by default.
-		"block_unsolicited_messages": false,
+		// Messaging — admin on, send and catch-all off by default.
 		"block_message_send":         false,
 		"block_message_admin":        true,
+		"block_unsolicited_messages": false,
 
 		// Session tools — off by default.
 		"block_sessions_spawn": false,

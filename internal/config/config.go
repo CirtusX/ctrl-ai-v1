@@ -3,7 +3,7 @@
 //
 // The config defines:
 //   - Server bind address (host:port)
-//   - Upstream LLM provider URLs (Anthropic, OpenAI, custom)
+//   - Upstream LLM provider URLs (Anthropic, OpenAI, Moonshot, Qwen, MiniMax, Zhipu, custom)
 //   - Streaming behavior (buffer SSE for tool inspection)
 //   - Dashboard toggle
 //
@@ -128,6 +128,10 @@ func applyDefaults() *Config {
 		Providers: map[string]ProviderConfig{
 			"anthropic": {Upstream: "https://api.anthropic.com"},
 			"openai":    {Upstream: "https://api.openai.com"},
+			"moonshot":  {Upstream: "https://api.moonshot.cn"},
+			"qwen":      {Upstream: "https://dashscope.aliyuncs.com/compatible-mode"},
+			"minimax":   {Upstream: "https://api.minimax.io"},
+			"zhipu":     {Upstream: "https://open.bigmodel.cn/api"},
 		},
 		Streaming: StreamingConfig{
 			Buffer:          true,

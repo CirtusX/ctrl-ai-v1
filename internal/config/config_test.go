@@ -28,14 +28,26 @@ func TestLoad_NonexistentFile(t *testing.T) {
 	if !cfg.Dashboard.Enabled {
 		t.Error("default dashboard: expected true")
 	}
-	if len(cfg.Providers) != 2 {
-		t.Errorf("default providers: expected 2, got %d", len(cfg.Providers))
+	if len(cfg.Providers) != 6 {
+		t.Errorf("default providers: expected 6, got %d", len(cfg.Providers))
 	}
-	if cfg.Providers["anthropic"].Upstream != "https://api.anthropic.com" {
-		t.Errorf("anthropic upstream: got %q", cfg.Providers["anthropic"].Upstream)
+	expectedProviders := map[string]string{
+		"anthropic": "https://api.anthropic.com",
+		"openai":    "https://api.openai.com",
+		"moonshot":  "https://api.moonshot.cn",
+		"qwen":      "https://dashscope.aliyuncs.com/compatible-mode",
+		"minimax":   "https://api.minimax.io",
+		"zhipu":     "https://open.bigmodel.cn/api",
 	}
-	if cfg.Providers["openai"].Upstream != "https://api.openai.com" {
-		t.Errorf("openai upstream: got %q", cfg.Providers["openai"].Upstream)
+	for name, wantUpstream := range expectedProviders {
+		p, ok := cfg.Providers[name]
+		if !ok {
+			t.Errorf("missing default provider: %s", name)
+			continue
+		}
+		if p.Upstream != wantUpstream {
+			t.Errorf("%s upstream: expected %q, got %q", name, wantUpstream, p.Upstream)
+		}
 	}
 }
 

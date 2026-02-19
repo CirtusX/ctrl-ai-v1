@@ -27,6 +27,8 @@ func modifyNonStreamingResponse(body []byte, apiType extractor.APIType, blocked 
 		return modifyAnthropicResponse(body, blocked, decisions)
 	case extractor.APITypeOpenAI:
 		return modifyOpenAIResponse(body, blocked, decisions)
+	case extractor.APITypeOpenAIResponses:
+		return modifyOpenAIResponsesResponse(body, blocked, decisions)
 	default:
 		return body
 	}
@@ -86,13 +88,13 @@ func modifyAnthropicResponse(body []byte, blocked []extractor.ToolCall, decision
 		notice := formatBlockNotice(blocked[i].Name, d.Rule, d.Message)
 		textBlock := map[string]json.RawMessage{
 			"type": json.RawMessage(`"text"`),
-			"text": mustMarshal(notice),
+			"text": safeMarshalRaw(notice),
 		}
 		filtered = append(filtered, textBlock)
 	}
 
 	// Update the content array.
-	resp["content"] = mustMarshalRaw(filtered)
+	resp["content"] = safeMarshalRaw(filtered)
 
 	// Change stop_reason: "tool_use" → "end_turn" if all tools blocked.
 	// Keep "tool_use" if some were allowed (partial blocking, design doc Section 7.4).
@@ -164,7 +166,7 @@ func modifyOpenAIResponse(body []byte, blocked []extractor.ToolCall, decisions [
 			if len(kept) == 0 {
 				message["tool_calls"] = json.RawMessage(`[]`)
 			} else {
-				message["tool_calls"] = mustMarshalRaw(kept)
+				message["tool_calls"] = safeMarshalRaw(kept)
 			}
 		}
 	}
@@ -183,21 +185,111 @@ func modifyOpenAIResponse(body []byte, blocked []extractor.ToolCall, decisions [
 			existingContent = notice
 		}
 	}
-	message["content"] = mustMarshal(existingContent)
+	message["content"] = safeMarshalRaw(existingContent)
 
 	// Change finish_reason if all tool calls blocked.
+	// Standard OpenAI uses "tool_calls"; Qwen may already use "stop" with tool_calls
+	// present; Zhipu uses "sensitive"/"network_error" for content/connection issues.
+	// We set to "stop" when all tools are blocked, regardless of original value.
 	if !hasAllowedToolCalls {
 		choice["finish_reason"] = json.RawMessage(`"stop"`)
 	}
 
 	// Rebuild the response.
-	choice["message"] = mustMarshalRaw(message)
+	choice["message"] = safeMarshalRaw(message)
 	choices[0] = choice
-	resp["choices"] = mustMarshalRaw(choices)
+	resp["choices"] = safeMarshalRaw(choices)
 
 	modified, err := json.Marshal(resp)
 	if err != nil {
 		slog.Error("failed to marshal modified OpenAI response", "error", err)
+		return body
+	}
+	return modified
+}
+
+// modifyOpenAIResponsesResponse modifies an OpenAI Responses API response body.
+//
+// Responses API format:
+//
+//	{
+//	  "id": "resp_abc",
+//	  "output": [
+//	    { "type": "message", "content": [...] },
+//	    { "type": "function_call", "call_id": "call_abc", "name": "exec", "arguments": "..." }
+//	  ],
+//	  "status": "completed"
+//	}
+//
+// Modification: remove blocked function_call items from output[], inject a
+// message output with the block notice, and keep status as "completed" so
+// the SDK doesn't retry.
+func modifyOpenAIResponsesResponse(body []byte, blocked []extractor.ToolCall, decisions []engine.Decision) []byte {
+	var resp map[string]json.RawMessage
+	if err := json.Unmarshal(body, &resp); err != nil {
+		slog.Error("failed to parse OpenAI Responses response for modification", "error", err)
+		return body
+	}
+
+	outputRaw, ok := resp["output"]
+	if !ok {
+		return body
+	}
+
+	var output []map[string]json.RawMessage
+	if err := json.Unmarshal(outputRaw, &output); err != nil {
+		return body
+	}
+
+	// Build set of blocked call IDs for fast lookup.
+	blockedCallIDs := make(map[string]bool)
+	for _, tc := range blocked {
+		blockedCallIDs[tc.ID] = true
+	}
+
+	// Filter output: keep non-function_call items, remove blocked function_calls.
+	var filtered []map[string]json.RawMessage
+	for _, item := range output {
+		itemType := unquoteRaw(item["type"])
+		if itemType == "function_call" {
+			callID := unquoteRaw(item["call_id"])
+			if callID == "" {
+				callID = unquoteRaw(item["id"])
+			}
+			if blockedCallIDs[callID] {
+				continue // Strip blocked function_call.
+			}
+		}
+		filtered = append(filtered, item)
+	}
+
+	// Build block notice text from all decisions.
+	var noticeText string
+	for i, d := range decisions {
+		notice := formatBlockNotice(blocked[i].Name, d.Rule, d.Message)
+		if noticeText != "" {
+			noticeText += "\n"
+		}
+		noticeText += notice
+	}
+
+	// Inject a message output item with the block notice.
+	noticeItem := map[string]json.RawMessage{
+		"type": json.RawMessage(`"message"`),
+		"content": safeMarshalRaw([]map[string]any{
+			{"type": "output_text", "text": noticeText},
+		}),
+	}
+	filtered = append(filtered, noticeItem)
+
+	resp["output"] = safeMarshalRaw(filtered)
+
+	// Keep status as "completed" — the SDK should not retry.
+	resp["status"] = json.RawMessage(`"completed"`)
+
+	modified, err := json.Marshal(resp)
+	if err != nil {
+		slog.Error("failed to marshal modified OpenAI Responses response", "error", err)
 		return body
 	}
 	return modified
@@ -255,6 +347,22 @@ func buildKilledResponse(apiType extractor.APIType) []byte {
 		data, _ := json.Marshal(resp)
 		return data
 
+	case extractor.APITypeOpenAIResponses:
+		resp := map[string]any{
+			"id": "resp_ctrlai_killed",
+			"output": []map[string]any{
+				{
+					"type": "message",
+					"content": []map[string]any{
+						{"type": "output_text", "text": "This agent has been terminated by the administrator."},
+					},
+				},
+			},
+			"status": "completed",
+		}
+		data, _ := json.Marshal(resp)
+		return data
+
 	default:
 		// For unknown API types, return a simple JSON response.
 		data, _ := json.Marshal(map[string]any{
@@ -274,16 +382,14 @@ func unquoteRaw(raw json.RawMessage) string {
 	return s
 }
 
-// mustMarshal marshals a value to json.RawMessage, panicking on error.
-func mustMarshal(v any) json.RawMessage {
+// safeMarshalRaw marshals a value to json.RawMessage. Returns a JSON null
+// literal on error instead of panicking — a panic in an HTTP handler goroutine
+// would crash the entire proxy.
+func safeMarshalRaw(v any) json.RawMessage {
 	data, err := json.Marshal(v)
 	if err != nil {
-		panic(fmt.Sprintf("json.Marshal failed: %v", err))
+		slog.Error("json.Marshal failed in response modifier", "error", err)
+		return json.RawMessage(`null`)
 	}
 	return data
-}
-
-// mustMarshalRaw marshals a value to json.RawMessage.
-func mustMarshalRaw(v any) json.RawMessage {
-	return mustMarshal(v)
 }

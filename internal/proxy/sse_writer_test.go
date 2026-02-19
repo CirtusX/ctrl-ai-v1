@@ -250,6 +250,211 @@ func TestAllOpenAIToolsBlocked(t *testing.T) {
 	}
 }
 
+// ==========================================================================
+// OpenAI Responses API SSE stream modification tests
+// ==========================================================================
+
+func responsesTestEvents() []SSEEvent {
+	return []SSEEvent{
+		{Event: "response.output_item.added", Data: `{"type":"message","content":[]}`},
+		{Event: "response.output_item.added", Data: `{"type":"function_call","call_id":"call_bad","name":"exec"}`},
+		{Event: "response.function_call_arguments.delta", Data: `{"call_id":"call_bad","delta":"{\"command\":"}`},
+		{Event: "response.function_call_arguments.delta", Data: `{"call_id":"call_bad","delta":"\"rm -rf /\"}"}`},
+		{Event: "response.function_call_arguments.done", Data: `{"call_id":"call_bad","arguments":"{\"command\":\"rm -rf /\"}"}`},
+		{Event: "response.output_item.done", Data: `{"type":"function_call","call_id":"call_bad"}`},
+		{Event: "response.completed", Data: `{"id":"resp_1","status":"completed"}`},
+	}
+}
+
+func TestBuildModifiedOpenAIResponsesStream_AllBlocked(t *testing.T) {
+	events := responsesTestEvents()
+	blocked := []extractor.ToolCall{{ID: "call_bad", Name: "exec", Index: 0}}
+	messages := []string{"[CtrlAI] Blocked: exec (rule: test)"}
+
+	modified := buildModifiedStream(events, extractor.APITypeOpenAIResponses, blocked, messages)
+
+	// All function_call events for call_bad should be stripped.
+	for _, evt := range modified {
+		if evt.Event == "response.output_item.added" {
+			var item struct {
+				Type   string `json:"type"`
+				CallID string `json:"call_id"`
+			}
+			json.Unmarshal([]byte(evt.Data), &item)
+			if item.Type == "function_call" && item.CallID == "call_bad" {
+				t.Error("blocked function_call output_item.added should be stripped")
+			}
+		}
+		if evt.Event == "response.function_call_arguments.delta" || evt.Event == "response.function_call_arguments.done" {
+			var delta struct {
+				CallID string `json:"call_id"`
+			}
+			json.Unmarshal([]byte(evt.Data), &delta)
+			if delta.CallID == "call_bad" {
+				t.Error("blocked function_call arguments events should be stripped")
+			}
+		}
+		if evt.Event == "response.output_item.done" {
+			var item struct {
+				Type   string `json:"type"`
+				CallID string `json:"call_id"`
+			}
+			json.Unmarshal([]byte(evt.Data), &item)
+			if item.Type == "function_call" && item.CallID == "call_bad" {
+				t.Error("blocked function_call output_item.done should be stripped")
+			}
+		}
+	}
+
+	// Should still have the response.completed event.
+	hasCompleted := false
+	for _, evt := range modified {
+		if evt.Event == "response.completed" {
+			hasCompleted = true
+		}
+	}
+	if !hasCompleted {
+		t.Error("response.completed event should be preserved")
+	}
+
+	// Should have a block notice injected before response.completed.
+	hasNotice := false
+	for _, evt := range modified {
+		if evt.Event == "response.output_item.added" {
+			var item struct {
+				Type string `json:"type"`
+			}
+			json.Unmarshal([]byte(evt.Data), &item)
+			if item.Type == "message" {
+				// Check if this is the notice (not the original message).
+				var full struct {
+					Content []struct {
+						Text string `json:"text"`
+					} `json:"content"`
+				}
+				json.Unmarshal([]byte(evt.Data), &full)
+				for _, c := range full.Content {
+					if c.Text != "" {
+						hasNotice = true
+					}
+				}
+			}
+		}
+	}
+	if !hasNotice {
+		t.Error("block notice should be injected")
+	}
+}
+
+func TestBuildModifiedOpenAIResponsesStream_PartialBlock(t *testing.T) {
+	// Two function calls: one blocked, one allowed.
+	events := []SSEEvent{
+		{Event: "response.output_item.added", Data: `{"type":"function_call","call_id":"call_good","name":"read"}`},
+		{Event: "response.function_call_arguments.done", Data: `{"call_id":"call_good","arguments":"{\"path\":\"/tmp\"}"}`},
+		{Event: "response.output_item.added", Data: `{"type":"function_call","call_id":"call_bad","name":"exec"}`},
+		{Event: "response.function_call_arguments.done", Data: `{"call_id":"call_bad","arguments":"{\"command\":\"rm -rf /\"}"}`},
+		{Event: "response.completed", Data: `{"status":"completed"}`},
+	}
+
+	blocked := []extractor.ToolCall{{ID: "call_bad", Name: "exec", Index: 1}}
+	messages := []string{"blocked"}
+
+	modified := buildModifiedStream(events, extractor.APITypeOpenAIResponses, blocked, messages)
+
+	// call_good events should be preserved.
+	hasGood := false
+	for _, evt := range modified {
+		if evt.Event == "response.output_item.added" {
+			var item struct {
+				CallID string `json:"call_id"`
+			}
+			json.Unmarshal([]byte(evt.Data), &item)
+			if item.CallID == "call_good" {
+				hasGood = true
+			}
+		}
+	}
+	if !hasGood {
+		t.Error("allowed function_call (call_good) should be preserved")
+	}
+
+	// call_bad events should be stripped.
+	for _, evt := range modified {
+		if evt.Event == "response.output_item.added" {
+			var item struct {
+				Type   string `json:"type"`
+				CallID string `json:"call_id"`
+			}
+			json.Unmarshal([]byte(evt.Data), &item)
+			if item.Type == "function_call" && item.CallID == "call_bad" {
+				t.Error("blocked function_call (call_bad) should be stripped")
+			}
+		}
+	}
+}
+
+// --- isBlockedResponsesEvent ---
+
+func TestIsBlockedResponsesEvent(t *testing.T) {
+	blocked := map[string]bool{"call_bad": true}
+
+	tests := []struct {
+		name    string
+		event   SSEEvent
+		blocked bool
+	}{
+		{
+			"blocked output_item.added",
+			SSEEvent{Event: "response.output_item.added", Data: `{"type":"function_call","call_id":"call_bad"}`},
+			true,
+		},
+		{
+			"allowed output_item.added",
+			SSEEvent{Event: "response.output_item.added", Data: `{"type":"function_call","call_id":"call_good"}`},
+			false,
+		},
+		{
+			"message output_item.added (never blocked)",
+			SSEEvent{Event: "response.output_item.added", Data: `{"type":"message"}`},
+			false,
+		},
+		{
+			"blocked delta",
+			SSEEvent{Event: "response.function_call_arguments.delta", Data: `{"call_id":"call_bad","delta":"..."}`},
+			true,
+		},
+		{
+			"allowed delta",
+			SSEEvent{Event: "response.function_call_arguments.delta", Data: `{"call_id":"call_good","delta":"..."}`},
+			false,
+		},
+		{
+			"blocked done",
+			SSEEvent{Event: "response.function_call_arguments.done", Data: `{"call_id":"call_bad","arguments":"{}"}`},
+			true,
+		},
+		{
+			"blocked output_item.done",
+			SSEEvent{Event: "response.output_item.done", Data: `{"type":"function_call","call_id":"call_bad"}`},
+			true,
+		},
+		{
+			"unrelated event",
+			SSEEvent{Event: "response.completed", Data: `{"status":"completed"}`},
+			false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isBlockedResponsesEvent(tt.event, blocked)
+			if result != tt.blocked {
+				t.Errorf("expected %v, got %v", tt.blocked, result)
+			}
+		})
+	}
+}
+
 // --- buildBlockNoticeText ---
 
 func TestBuildBlockNoticeText(t *testing.T) {

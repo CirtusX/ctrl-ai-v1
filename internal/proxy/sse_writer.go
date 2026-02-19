@@ -28,6 +28,8 @@ func buildModifiedStream(events []SSEEvent, apiType extractor.APIType, blocked [
 		return buildModifiedAnthropicStream(events, blocked, blockMessages)
 	case extractor.APITypeOpenAI:
 		return buildModifiedOpenAIStream(events, blocked, blockMessages)
+	case extractor.APITypeOpenAIResponses:
+		return buildModifiedOpenAIResponsesStream(events, blocked, blockMessages)
 	default:
 		return events
 	}
@@ -241,6 +243,11 @@ func buildModifiedOpenAIStream(events []SSEEvent, blocked []extractor.ToolCall, 
 		// Change finish_reason if all tool calls were blocked.
 		// Only change to "stop" if every tool call was blocked (partial blocking
 		// keeps "tool_calls" — design doc Section 7.4).
+		//
+		// Note: Qwen may use "stop" as finish_reason even with tool_calls present,
+		// so we don't need to change it in that case. Zhipu may use "sensitive"
+		// or "network_error" — we leave those as-is since they indicate provider-
+		// level issues unrelated to our blocking.
 		if frRaw, hasFR := choice["finish_reason"]; hasFR {
 			var fr string
 			if err := json.Unmarshal(frRaw, &fr); err == nil && fr == "tool_calls" {

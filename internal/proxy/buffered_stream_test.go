@@ -2,6 +2,8 @@ package proxy
 
 import (
 	"testing"
+
+	"github.com/ctrlai/ctrlai/internal/extractor"
 )
 
 func TestReconstructAnthropic_FullStream(t *testing.T) {
@@ -178,5 +180,131 @@ func TestReconstructOpenAI_Empty(t *testing.T) {
 	msg := reconstructOpenAI(nil)
 	if len(msg.ToolCalls) != 0 {
 		t.Errorf("expected 0 tool calls, got %d", len(msg.ToolCalls))
+	}
+}
+
+// ==========================================================================
+// OpenAI Responses API stream reconstruction tests
+// ==========================================================================
+
+func TestReconstructOpenAIResponses_SingleFunctionCall(t *testing.T) {
+	events := []SSEEvent{
+		{Event: "response.output_item.added", Data: `{"type":"function_call","call_id":"call_abc","name":"exec"}`},
+		{Event: "response.function_call_arguments.delta", Data: `{"call_id":"call_abc","delta":"{\"command\":"}`},
+		{Event: "response.function_call_arguments.delta", Data: `{"call_id":"call_abc","delta":"\"ls -la\"}"}`},
+		{Event: "response.function_call_arguments.done", Data: `{"call_id":"call_abc","arguments":"{\"command\": \"ls -la\"}"}`},
+		{Event: "response.completed", Data: `{"id":"resp_abc","status":"completed"}`},
+	}
+
+	msg := reconstructOpenAIResponses(events)
+
+	if len(msg.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(msg.ToolCalls))
+	}
+	if msg.ToolCalls[0].Name != "exec" {
+		t.Errorf("name: expected exec, got %q", msg.ToolCalls[0].Name)
+	}
+	if msg.ToolCalls[0].ID != "call_abc" {
+		t.Errorf("ID: expected call_abc, got %q", msg.ToolCalls[0].ID)
+	}
+	cmd, _ := msg.ToolCalls[0].Arguments["command"].(string)
+	if cmd != "ls -la" {
+		t.Errorf("command: expected 'ls -la', got %q", cmd)
+	}
+	if msg.StopReason != "completed" {
+		t.Errorf("stop reason: expected completed, got %q", msg.StopReason)
+	}
+}
+
+func TestReconstructOpenAIResponses_MultipleFunctionCalls(t *testing.T) {
+	events := []SSEEvent{
+		{Event: "response.output_item.added", Data: `{"type":"function_call","call_id":"call_1","name":"exec"}`},
+		{Event: "response.output_item.added", Data: `{"type":"function_call","call_id":"call_2","name":"read"}`},
+		{Event: "response.function_call_arguments.done", Data: `{"call_id":"call_1","arguments":"{\"command\": \"ls\"}"}`},
+		{Event: "response.function_call_arguments.done", Data: `{"call_id":"call_2","arguments":"{\"path\": \"/tmp\"}"}`},
+		{Event: "response.completed", Data: `{"id":"resp_multi","status":"completed"}`},
+	}
+
+	msg := reconstructOpenAIResponses(events)
+
+	if len(msg.ToolCalls) != 2 {
+		t.Fatalf("expected 2 tool calls, got %d", len(msg.ToolCalls))
+	}
+	if msg.ToolCalls[0].Name != "exec" {
+		t.Errorf("call[0]: expected exec, got %q", msg.ToolCalls[0].Name)
+	}
+	if msg.ToolCalls[1].Name != "read" {
+		t.Errorf("call[1]: expected read, got %q", msg.ToolCalls[1].Name)
+	}
+}
+
+func TestReconstructOpenAIResponses_DoneOverridesDeltas(t *testing.T) {
+	events := []SSEEvent{
+		{Event: "response.output_item.added", Data: `{"type":"function_call","call_id":"call_x","name":"exec"}`},
+		{Event: "response.function_call_arguments.delta", Data: `{"call_id":"call_x","delta":"partial_garbage"}`},
+		{Event: "response.function_call_arguments.done", Data: `{"call_id":"call_x","arguments":"{\"command\": \"correct\"}"}`},
+		{Event: "response.completed", Data: `{"status":"completed"}`},
+	}
+
+	msg := reconstructOpenAIResponses(events)
+	if len(msg.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(msg.ToolCalls))
+	}
+	cmd, _ := msg.ToolCalls[0].Arguments["command"].(string)
+	if cmd != "correct" {
+		t.Errorf("done event should override deltas, got %q", cmd)
+	}
+}
+
+func TestReconstructOpenAIResponses_MessageOnly(t *testing.T) {
+	events := []SSEEvent{
+		{Event: "response.output_item.added", Data: `{"type":"message","content":[]}`},
+		{Event: "response.completed", Data: `{"status":"completed"}`},
+	}
+
+	msg := reconstructOpenAIResponses(events)
+	if len(msg.ToolCalls) != 0 {
+		t.Errorf("expected 0 tool calls, got %d", len(msg.ToolCalls))
+	}
+	if msg.StopReason != "completed" {
+		t.Errorf("stop reason: expected completed, got %q", msg.StopReason)
+	}
+}
+
+func TestReconstructOpenAIResponses_Empty(t *testing.T) {
+	msg := reconstructOpenAIResponses(nil)
+	if len(msg.ToolCalls) != 0 {
+		t.Errorf("expected 0 tool calls, got %d", len(msg.ToolCalls))
+	}
+}
+
+func TestReconstructOpenAIResponses_EmptyEvents(t *testing.T) {
+	// Events with empty data should be skipped.
+	events := []SSEEvent{
+		{Event: "response.output_item.added", Data: ""},
+		{Event: "response.completed", Data: `{"status":"completed"}`},
+	}
+	msg := reconstructOpenAIResponses(events)
+	if len(msg.ToolCalls) != 0 {
+		t.Errorf("expected 0 tool calls, got %d", len(msg.ToolCalls))
+	}
+}
+
+// --- reconstruct dispatch ---
+
+func TestReconstruct_DispatchOpenAIResponses(t *testing.T) {
+	events := []SSEEvent{
+		{Event: "response.output_item.added", Data: `{"type":"function_call","call_id":"c1","name":"exec"}`},
+		{Event: "response.function_call_arguments.done", Data: `{"call_id":"c1","arguments":"{}"}`},
+	}
+	msg := reconstruct(events, extractor.APITypeOpenAIResponses)
+	if len(msg.ToolCalls) != 1 {
+		t.Errorf("OpenAI Responses dispatch: expected 1 tool call, got %d", len(msg.ToolCalls))
+	}
+
+	// Unknown type should return empty message.
+	msg = reconstruct(events, extractor.APITypeUnknown)
+	if len(msg.ToolCalls) != 0 {
+		t.Errorf("Unknown dispatch: expected 0 tool calls, got %d", len(msg.ToolCalls))
 	}
 }

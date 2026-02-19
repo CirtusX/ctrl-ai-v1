@@ -80,14 +80,20 @@ func bufferAll(body io.ReadCloser, timeoutMs int, apiType extractor.APIType) ([]
 		}
 	case <-time.After(timeout):
 		slog.Warn("SSE buffer timeout, flushing partial events", "timeout_ms", timeoutMs)
-		// The goroutine may still be reading. We'll use whatever events
-		// we have so far. The goroutine will eventually finish and the
-		// channel will be garbage collected.
+		// Close the body to unblock the goroutine's scanner.Scan() call.
+		// Without this, the goroutine leaks — it stays blocked on the
+		// io.Reader indefinitely until the upstream connection closes.
+		body.Close()
+
+		// Wait briefly for the goroutine to finish after we closed the body.
+		// The close will cause scanner.Scan() to return false with an error,
+		// allowing the goroutine to send whatever events it has collected.
 		select {
 		case r := <-ch:
 			events = r.events
-		default:
-			// No events yet — return empty.
+		case <-time.After(1 * time.Second):
+			// Goroutine didn't finish within 1s — use empty events.
+			slog.Warn("SSE parser goroutine did not exit after body close")
 		}
 	}
 
@@ -105,6 +111,8 @@ func reconstruct(events []SSEEvent, apiType extractor.APIType) *BufferedMessage 
 		return reconstructAnthropic(events)
 	case extractor.APITypeOpenAI:
 		return reconstructOpenAI(events)
+	case extractor.APITypeOpenAIResponses:
+		return reconstructOpenAIResponses(events)
 	default:
 		return &BufferedMessage{}
 	}
