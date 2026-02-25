@@ -677,6 +677,22 @@ A `Makefile` is included for Linux/macOS users who prefer `make build`, `make te
 | Daemon mode | `ctrlai start -d` | `ctrlai start -d` (same) |
 | Background alt | `ctrlai start &` | `Start-Process ctrlai -ArgumentList start` |
 
+## Security
+
+Found a vulnerability? Please report it responsibly to **security@cirtus.com**. Do not open a public issue for security bugs.
+
+## Enterprise
+
+Self-hosting CtrlAI works great for individual developers and small teams. For organizations that need more, **CtrlAI Enterprise** adds:
+
+- **Centralized policy management** — push rules across all agents and developers from one place
+- **Team-wide audit** — unified audit log with search, retention policies, and compliance exports
+- **SSO & RBAC** — integrate with your identity provider, scope permissions by role
+- **Managed deployment** — hosted proxy with SLA, no self-hosting overhead
+- **Priority support** — direct access to the engineering team
+
+Get in touch: **enterprise@cirtus.com**
+
 ## License
 
 MIT
