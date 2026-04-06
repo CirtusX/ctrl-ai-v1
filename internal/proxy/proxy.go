@@ -96,6 +96,10 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"method", r.Method,
 	)
 
+	// --- Step 1.5: Extract runtime rules from X-Ctrl-Rules header ---
+	// Enterprise deployments can pass per-org rules via this header.
+	runtimeRules := extractRuntimeRules(r)
+
 	// --- Step 2: Read request body ---
 	// We read the body first to extract metadata (model, tools, stream flag).
 	// This is needed before the kill switch check so we can return the correct
@@ -157,9 +161,9 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if reqMeta.Stream && p.config.Streaming.Buffer {
-		p.handleStreaming(w, resp, route, reqMeta, start)
+		p.handleStreaming(w, resp, route, reqMeta, start, runtimeRules)
 	} else {
-		p.handleNonStreaming(w, resp, route, reqMeta, start)
+		p.handleNonStreaming(w, resp, route, reqMeta, start, runtimeRules)
 	}
 }
 
@@ -168,7 +172,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // and modifies the response if any are blocked.
 //
 // Design doc Section 13 — handleNonStreaming pseudocode.
-func (p *Proxy) handleNonStreaming(w http.ResponseWriter, resp *http.Response, route RouteInfo, meta extractor.RequestMeta, start time.Time) {
+func (p *Proxy) handleNonStreaming(w http.ResponseWriter, resp *http.Response, route RouteInfo, meta extractor.RequestMeta, start time.Time, runtimeRules []engine.Rule) {
 	// Read the full response body.
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -195,7 +199,7 @@ func (p *Proxy) handleNonStreaming(w http.ResponseWriter, resp *http.Response, r
 
 	for _, tc := range toolCalls {
 		evalStart := time.Now()
-		decision := p.engine.Evaluate(route.AgentID, tc)
+		decision := p.engine.EvaluateWithRuntimeRules(route.AgentID, tc, runtimeRules)
 		latencyUs := time.Since(evalStart).Microseconds()
 
 		// Log to audit chain.
@@ -252,7 +256,7 @@ func (p *Proxy) handleNonStreaming(w http.ResponseWriter, resp *http.Response, r
 //
 // Design doc Section 5.4: Buffer-Then-Forward strategy.
 // Design doc Section 13 — handleStreaming pseudocode.
-func (p *Proxy) handleStreaming(w http.ResponseWriter, resp *http.Response, route RouteInfo, meta extractor.RequestMeta, start time.Time) {
+func (p *Proxy) handleStreaming(w http.ResponseWriter, resp *http.Response, route RouteInfo, meta extractor.RequestMeta, start time.Time, runtimeRules []engine.Rule) {
 	// Buffer all SSE events until message_stop / [DONE].
 	events, msg, err := bufferAll(resp.Body, p.config.Streaming.BufferTimeoutMs, route.APIType)
 	if err != nil {
@@ -267,7 +271,7 @@ func (p *Proxy) handleStreaming(w http.ResponseWriter, resp *http.Response, rout
 
 	for _, tc := range msg.ToolCalls {
 		evalStart := time.Now()
-		decision := p.engine.Evaluate(route.AgentID, tc)
+		decision := p.engine.EvaluateWithRuntimeRules(route.AgentID, tc, runtimeRules)
 		latencyUs := time.Since(evalStart).Microseconds()
 
 		// Log to audit chain.

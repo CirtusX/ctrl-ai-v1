@@ -71,6 +71,41 @@ func (e *Engine) Evaluate(agentID string, tc extractor.ToolCall) Decision {
 	return Decision{Action: "allow"}
 }
 
+// EvaluateWithRuntimeRules checks a tool call against all rules (file-based + runtime).
+// Runtime rules are evaluated FIRST (higher priority than file-based rules).
+// This allows enterprise/org-specific rules to override defaults.
+//
+// Used when X-Ctrl-Rules header is present in the request.
+func (e *Engine) EvaluateWithRuntimeRules(agentID string, tc extractor.ToolCall, runtimeRules []Rule) Decision {
+	// Evaluate runtime rules first (they have priority)
+	for _, rule := range runtimeRules {
+		if matchesRule(&rule, agentID, tc) {
+			return Decision{
+				Action:  rule.Action,
+				Rule:    rule.Name,
+				Message: rule.Message,
+			}
+		}
+	}
+
+	// Fall back to file-based rules
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	for _, rule := range e.rules {
+		if matchesRule(&rule, agentID, tc) {
+			return Decision{
+				Action:  rule.Action,
+				Rule:    rule.Name,
+				Message: rule.Message,
+			}
+		}
+	}
+
+	// No rule matched — default allow.
+	return Decision{Action: "allow"}
+}
+
 // TestJSON evaluates a tool call provided as a JSON string.
 // Used by `ctrlai rules test` to verify rules without running a live agent.
 // The JSON should contain "name" and "arguments" fields.

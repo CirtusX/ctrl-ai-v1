@@ -157,6 +157,29 @@ func saveRulesToFile(path string, customRules []Rule, builtinToggles map[string]
 	return os.WriteFile(path, []byte(header+string(data)), 0o644)
 }
 
+// ParseRulesFromYAML parses rules from YAML bytes (used for X-Ctrl-Rules header).
+// Returns the parsed rules and built-in toggles, or an error if parsing fails.
+// Rules are compiled (regex/glob validated) before returning.
+func ParseRulesFromYAML(yamlData []byte) ([]Rule, map[string]bool, error) {
+	if len(yamlData) == 0 {
+		return nil, nil, nil
+	}
+
+	var file rulesFile
+	if err := yaml.Unmarshal(yamlData, &file); err != nil {
+		return nil, nil, fmt.Errorf("parsing runtime rules: %w", err)
+	}
+
+	// Compile matchers for all rules
+	for i := range file.Rules {
+		if err := compileMatcher(&file.Rules[i]); err != nil {
+			return nil, nil, fmt.Errorf("compiling rule %s: %w", file.Rules[i].Name, err)
+		}
+	}
+
+	return file.Rules, file.Builtin, nil
+}
+
 // WriteDefaultRules writes a default rules.yaml with all built-in rules enabled.
 // Used by the first-run setup.
 func WriteDefaultRules(path string) error {
