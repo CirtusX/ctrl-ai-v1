@@ -1,13 +1,17 @@
 package proxy
 
 import (
+	"bytes"
+	"compress/gzip"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/andybalholm/brotli"
 	"github.com/ctrlai/ctrlai/internal/agent"
 	"github.com/ctrlai/ctrlai/internal/audit"
 	"github.com/ctrlai/ctrlai/internal/config"
@@ -181,11 +185,72 @@ func (p *Proxy) handleNonStreaming(w http.ResponseWriter, resp *http.Response, r
 		return
 	}
 
+	// Log all response headers for debugging
+	slog.Info("📋 Response headers", "status", resp.StatusCode)
+	for key, values := range resp.Header {
+		slog.Info("  Header", "name", key, "value", values)
+	}
+
+	// Check if response is compressed and decompress if needed
+	contentEncoding := resp.Header.Get("Content-Encoding")
+	contentEncodingLower := strings.ToLower(contentEncoding)
+	slog.Info("🔎 Checking Content-Encoding", "value", contentEncoding)
+
+	if strings.Contains(contentEncodingLower, "br") {
+		// Brotli compression
+		slog.Info("🗜️ Response is Brotli-compressed, decompressing...", "original_size", len(body))
+
+		brReader := brotli.NewReader(bytes.NewReader(body))
+		decompressed, err := io.ReadAll(brReader)
+		if err != nil {
+			slog.Error("failed to decompress brotli body", "error", err)
+			http.Error(w, "failed to decompress response", http.StatusBadGateway)
+			return
+		}
+
+		slog.Info("  ✅ Brotli decompression complete", "decompressed_size", len(decompressed))
+		body = decompressed
+		resp.Header.Del("Content-Encoding")
+
+	} else if strings.Contains(contentEncodingLower, "gzip") {
+		// Gzip compression
+		slog.Info("🗜️ Response is gzip-compressed, decompressing...", "original_size", len(body))
+
+		gzReader, err := gzip.NewReader(bytes.NewReader(body))
+		if err != nil {
+			slog.Error("failed to create gzip reader", "error", err)
+			http.Error(w, "failed to decompress response", http.StatusBadGateway)
+			return
+		}
+		defer gzReader.Close()
+
+		decompressed, err := io.ReadAll(gzReader)
+		if err != nil {
+			slog.Error("failed to decompress gzip body", "error", err)
+			http.Error(w, "failed to decompress response", http.StatusBadGateway)
+			return
+		}
+
+		slog.Info("  ✅ Gzip decompression complete", "decompressed_size", len(decompressed))
+		body = decompressed
+		resp.Header.Del("Content-Encoding")
+	}
+
 	// Extract tool calls from the response.
+	slog.Info("🔍 Extracting tool calls from response", "api_type", route.APIType, "body_length", len(body))
+	previewLen := 500
+	if len(body) < previewLen {
+		previewLen = len(body)
+	}
+	slog.Info("  Response body preview", "preview", string(body[:previewLen]))
+
 	toolCalls := extractor.Extract(body, route.APIType)
+
+	slog.Info("  Extraction complete", "tool_calls_count", len(toolCalls))
 
 	if len(toolCalls) == 0 {
 		// No tool calls — pass through unchanged.
+		slog.Info("⚠️ No tool calls found - passing through unchanged")
 		copyResponseHeaders(w.Header(), resp.Header)
 		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 		w.WriteHeader(resp.StatusCode)
