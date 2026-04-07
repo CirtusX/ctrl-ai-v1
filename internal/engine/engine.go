@@ -77,9 +77,20 @@ func (e *Engine) Evaluate(agentID string, tc extractor.ToolCall) Decision {
 //
 // Used when X-Ctrl-Rules header is present in the request.
 func (e *Engine) EvaluateWithRuntimeRules(agentID string, tc extractor.ToolCall, runtimeRules []Rule) Decision {
+	slog.Info("🔍 EvaluateWithRuntimeRules called",
+		"agent_id", agentID,
+		"tool_name", tc.Name,
+		"runtime_rules_count", len(runtimeRules))
+
+	// Log the tool call details
+	tcJSON, _ := json.Marshal(tc)
+	slog.Info("  Tool call details", "json", string(tcJSON))
+
 	// Evaluate runtime rules first (they have priority)
-	for _, rule := range runtimeRules {
+	for i, rule := range runtimeRules {
+		slog.Info("  Checking runtime rule", "index", i, "name", rule.Name)
 		if matchesRule(&rule, agentID, tc) {
+			slog.Info("🚫 BLOCKED by runtime rule", "rule", rule.Name, "message", rule.Message)
 			return Decision{
 				Action:  rule.Action,
 				Rule:    rule.Name,
@@ -88,12 +99,15 @@ func (e *Engine) EvaluateWithRuntimeRules(agentID string, tc extractor.ToolCall,
 		}
 	}
 
+	slog.Info("  No runtime rules matched, checking file-based rules")
+
 	// Fall back to file-based rules
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
 	for _, rule := range e.rules {
 		if matchesRule(&rule, agentID, tc) {
+			slog.Info("🚫 BLOCKED by file-based rule", "rule", rule.Name)
 			return Decision{
 				Action:  rule.Action,
 				Rule:    rule.Name,
@@ -103,6 +117,7 @@ func (e *Engine) EvaluateWithRuntimeRules(agentID string, tc extractor.ToolCall,
 	}
 
 	// No rule matched — default allow.
+	slog.Info("✅ ALLOWED - no rules matched", "tool", tc.Name, "agent", agentID)
 	return Decision{Action: "allow"}
 }
 

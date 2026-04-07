@@ -311,6 +311,13 @@ func (p *Proxy) handleNonStreaming(w http.ResponseWriter, resp *http.Response, r
 	// Send response to SDK.
 	copyResponseHeaders(w.Header(), resp.Header)
 	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+
+	// Add custom headers for enterprise dashboard integration
+	allowedCount := len(toolCalls) - len(blocked)
+	w.Header().Set("X-Ctrl-Blocked-Count", strconv.Itoa(len(blocked)))
+	w.Header().Set("X-Ctrl-Allowed-Count", strconv.Itoa(allowedCount))
+	w.Header().Set("X-Ctrl-Total-Tool-Calls", strconv.Itoa(len(toolCalls)))
+
 	w.WriteHeader(resp.StatusCode)
 	w.Write(body)
 }

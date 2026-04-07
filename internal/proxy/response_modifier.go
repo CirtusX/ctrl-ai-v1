@@ -148,24 +148,33 @@ func modifyOpenAIResponse(body []byte, blocked []extractor.ToolCall, decisions [
 	blockedIDs := make(map[string]bool)
 	for _, tc := range blocked {
 		blockedIDs[tc.ID] = true
+		slog.Info("📝 Adding blocked tool call ID", "id", tc.ID, "name", tc.Name)
 	}
+	slog.Info("🔧 modifyOpenAIResponse called", "blocked_count", len(blocked), "blocked_ids", blockedIDs)
 
 	hasAllowedToolCalls := false
 	if tcRaw, ok := message["tool_calls"]; ok {
+		slog.Info("  Found tool_calls in message, parsing...")
 		var toolCalls []map[string]json.RawMessage
 		if err := json.Unmarshal(tcRaw, &toolCalls); err == nil {
+			slog.Info("  Parsed tool_calls array", "count", len(toolCalls))
 			var kept []map[string]json.RawMessage
 			for _, tc := range toolCalls {
 				id := unquoteRaw(tc["id"])
+				slog.Info("  Checking tool call", "id", id, "is_blocked", blockedIDs[id])
 				if blockedIDs[id] {
+					slog.Info("  ✂️ Removing blocked tool call", "id", id)
 					continue
 				}
 				kept = append(kept, tc)
 				hasAllowedToolCalls = true
 			}
+			slog.Info("  Filtering complete", "original", len(toolCalls), "kept", len(kept))
 			if len(kept) == 0 {
+				slog.Info("  ✅ All tool calls blocked - setting tool_calls to []")
 				message["tool_calls"] = json.RawMessage(`[]`)
 			} else {
+				slog.Info("  Some tool calls allowed, keeping them")
 				message["tool_calls"] = safeMarshalRaw(kept)
 			}
 		}

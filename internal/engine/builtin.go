@@ -282,3 +282,16 @@ func defaultBuiltinToggles() map[string]bool {
 		"block_gateway_restart": true,
 	}
 }
+
+// GetAllBuiltinRules returns all built-in rules (exported for use in header_rules.go).
+// This is a public wrapper around the private builtinRules() function.
+func GetAllBuiltinRules() ([]Rule, error) {
+	rules := builtinRules()
+	// Compile matchers for all built-in rules
+	for i := range rules {
+		if err := compileMatcher(&rules[i]); err != nil {
+			return nil, err
+		}
+	}
+	return rules, nil
+}

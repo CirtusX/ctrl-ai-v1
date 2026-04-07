@@ -1,0 +1,5 @@
+After line 97 (after the slog.Debug), add:
+
+	// --- Step 1.5: Extract runtime rules from X-Ctrl-Rules header ---
+	// Enterprise deployments can pass per-org rules via this header.
+	runtimeRules := extractRuntimeRules(r)
