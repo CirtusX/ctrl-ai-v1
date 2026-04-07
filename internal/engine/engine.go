@@ -86,7 +86,9 @@ func (e *Engine) EvaluateWithRuntimeRules(agentID string, tc extractor.ToolCall,
 	tcJSON, _ := json.Marshal(tc)
 	slog.Info("  Tool call details", "json", string(tcJSON))
 
-	// Evaluate runtime rules first (they have priority)
+	// Runtime rules are the COMPLETE rule set from the enterprise header.
+	// They already include enabled built-ins + custom rules with toggles applied.
+	// Do NOT fall back to file-based rules — that would re-enable disabled built-ins.
 	for i, rule := range runtimeRules {
 		slog.Info("  Checking runtime rule", "index", i, "name", rule.Name)
 		if matchesRule(&rule, agentID, tc) {
@@ -99,25 +101,8 @@ func (e *Engine) EvaluateWithRuntimeRules(agentID string, tc extractor.ToolCall,
 		}
 	}
 
-	slog.Info("  No runtime rules matched, checking file-based rules")
-
-	// Fall back to file-based rules
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-
-	for _, rule := range e.rules {
-		if matchesRule(&rule, agentID, tc) {
-			slog.Info("🚫 BLOCKED by file-based rule", "rule", rule.Name)
-			return Decision{
-				Action:  rule.Action,
-				Rule:    rule.Name,
-				Message: rule.Message,
-			}
-		}
-	}
-
 	// No rule matched — default allow.
-	slog.Info("✅ ALLOWED - no rules matched", "tool", tc.Name, "agent", agentID)
+	slog.Info("✅ ALLOWED - no runtime rules matched", "tool", tc.Name, "agent", agentID)
 	return Decision{Action: "allow"}
 }
 
