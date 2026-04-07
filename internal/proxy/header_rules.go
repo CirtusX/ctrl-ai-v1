@@ -42,22 +42,28 @@ func extractRuntimeRules(r *http.Request) []engine.Rule {
 	slog.Info("✅ Parsed runtime rules", "custom_count", len(customRules), "builtin_toggles", builtinToggles)
 
 	// Merge built-in rules with toggles.
-	// Rules explicitly set to false are excluded. Everything else is included.
+	// For rules in the org's toggles: use that value.
+	// For rules NOT in the org's toggles: use Go's default (some are off by default).
 	var mergedRules []engine.Rule
+	defaults := engine.DefaultBuiltinToggles()
 
 	allBuiltins, err := engine.GetAllBuiltinRules()
 	if err != nil {
 		slog.Warn("failed to get built-in rules", "error", err)
 	} else {
 		for _, rule := range allBuiltins {
+			enabled := true // fallback
 			if builtinToggles != nil {
-				enabled, exists := builtinToggles[rule.Name]
-				if exists && !enabled {
-					slog.Info("  Excluding built-in rule (disabled)", "name", rule.Name)
-					continue
+				if val, exists := builtinToggles[rule.Name]; exists {
+					enabled = val
+				} else if defVal, exists := defaults[rule.Name]; exists {
+					enabled = defVal
 				}
 			}
-			// Include rule: either explicitly enabled, not in toggles, or no toggles at all
+			if !enabled {
+				slog.Info("  Excluding built-in rule (disabled)", "name", rule.Name)
+				continue
+			}
 			slog.Info("  Including built-in rule", "name", rule.Name)
 			mergedRules = append(mergedRules, rule)
 		}

@@ -263,7 +263,7 @@ func (e *Engine) loadUnlocked(rulesPath string) error {
 
 	// Merge file toggles with defaults. If the file specifies a toggle, use it.
 	// Otherwise, fall back to the default (some builtins are off by default).
-	defaults := defaultBuiltinToggles()
+	defaults := DefaultBuiltinToggles()
 	if builtinToggles == nil {
 		builtinToggles = defaults
 	} else {
